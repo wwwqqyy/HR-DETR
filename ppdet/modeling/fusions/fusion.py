@@ -1,12 +1,11 @@
 import paddle
 import paddle.nn as nn
 import paddle.nn.functional as F
-
+from ppdet.utils.logger import setup_logger
 from ppdet.core.workspace import register
 from ..backbones.csp_darknet import BaseConv
 
 __all__ = ['ModalityInteraction']
-
 
 class ShiftShuffle(nn.Layer):
     def __init__(self, reverse=False, modalities=2):
@@ -49,7 +48,6 @@ class ShiftShuffle(nn.Layer):
 
         return shuffled, shifted
 
-
 @register
 class ModalityInteraction(nn.Layer):
     def __init__(self, channels=512, bias=False):
@@ -74,21 +72,32 @@ class ModalityInteraction(nn.Layer):
                                 bias=bias)
 
     def forward(self, vis_body_feats, ir_body_feats):
-        residual = [vis_body_feats, ir_body_feats]
+        # 保存原始特征
+        vis_residual = vis_body_feats
+        ir_residual = ir_body_feats
 
+        # 特征提取
         vis_body_feats = self.conv1_1(vis_body_feats)
         ir_body_feats = self.conv1_2(ir_body_feats)
 
+        # 模态交互
         out, shift = self.shift_shuffle1([vis_body_feats, ir_body_feats])
 
+        # 进一步特征变换
         out[0] = self.conv2_1(out[0])
         out[1] = self.conv2_2(out[1])
 
+        # 特征融合
         out[0] = out[0] + shift[1]
         out[1] = out[1] + shift[0]
         out, _ = self.shift_shuffle2(out)
 
+        # 最终特征提取
         out[0] = self.conv3_1(out[0])
         out[1] = self.conv3_2(out[1])
 
-        return out[0] + residual[0], out[1] + residual[1]
+        # 残差连接
+        vis_out = out[0] + vis_residual
+        ir_out = out[1] + ir_residual
+
+        return vis_out, ir_out
