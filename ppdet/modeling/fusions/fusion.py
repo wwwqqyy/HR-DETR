@@ -1,11 +1,16 @@
 import paddle
 import paddle.nn as nn
 import paddle.nn.functional as F
+from paddle import ParamAttr
+from paddle.regularizer import L2Decay
+
+from ppdet.core.workspace import register, serializable
+from ppdet.modeling.initializer import conv_init_
 from ppdet.utils.logger import setup_logger
-from ppdet.core.workspace import register
 from ..backbones.csp_darknet import BaseConv
 
 __all__ = ['ModalityInteraction']
+
 
 class ShiftShuffle(nn.Layer):
     def __init__(self, reverse=False, modalities=2):
@@ -48,14 +53,29 @@ class ShiftShuffle(nn.Layer):
 
         return shuffled, shifted
 
+
 @register
+# @serializable
 class ModalityInteraction(nn.Layer):
-    def __init__(self, channels=512, bias=False):
+    def __init__(self, channels=512, gamma_init=10.0, bias=False, use_gamma=True):  # 新增use_gamma参数
         super(ModalityInteraction, self).__init__()
+        self.use_gamma = use_gamma  # 控制是否使用gamma
+
+        if self.use_gamma:
+            self.gamma = self.create_parameter(
+                shape=[1],
+                dtype='float32',
+                default_initializer=paddle.nn.initializer.Constant(gamma_init)
+            )
+            # 训练状态跟踪（仅gamma启用时记录）
+            self.step_counter = 0
+            self.log_interval = 200
+            self.logger = setup_logger('fusion', './log/gamma.log')
 
         self.shift_shuffle1 = ShiftShuffle(reverse=False)
         self.shift_shuffle2 = ShiftShuffle(reverse=True)
 
+        # 其余卷积层初始化
         self.conv1_1 = BaseConv(in_channels=channels, out_channels=channels // 2, ksize=1, stride=1,
                                 bias=bias)
         self.conv1_2 = BaseConv(in_channels=channels, out_channels=channels // 2, ksize=1, stride=1,
@@ -71,7 +91,23 @@ class ModalityInteraction(nn.Layer):
         self.conv3_2 = BaseConv(in_channels=channels // 2, out_channels=channels, ksize=1, stride=1,
                                 bias=bias)
 
+    def _log_gammas(self):
+        """仅当use_gamma=True时生效"""
+        if self.use_gamma and hasattr(self, 'logger'):
+            self.logger.info(
+                "Step {}: gamma={:.8f}".format(
+                    self.step_counter,
+                    float(F.sigmoid(self.gamma).numpy()[0])
+                )
+            )
+
     def forward(self, vis_body_feats, ir_body_feats):
+        # 训练日志记录（仅gamma启用时）
+        # if self.training and self.use_gamma:
+        #     if self.step_counter % self.log_interval == 0:
+        #         self._log_gammas()
+        #     self.step_counter += 1
+
         # 保存原始特征
         vis_residual = vis_body_feats
         ir_residual = ir_body_feats
@@ -96,8 +132,13 @@ class ModalityInteraction(nn.Layer):
         out[0] = self.conv3_1(out[0])
         out[1] = self.conv3_2(out[1])
 
-        # 残差连接
-        vis_out = out[0] + vis_residual
-        ir_out = out[1] + ir_residual
+        # 最终融合部分
+        if self.use_gamma:
+            gamma = F.sigmoid(self.gamma)
+            vis_out = gamma * out[0] + (1 - gamma) * vis_residual
+            ir_out = gamma * out[1] + (1 - gamma) * ir_residual
+        else:
+            vis_out = out[0] + vis_residual  # 残差
+            ir_out = out[1] + ir_residual
 
         return vis_out, ir_out
