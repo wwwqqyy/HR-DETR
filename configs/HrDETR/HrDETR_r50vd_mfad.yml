@@ -1,0 +1,10 @@
+_BASE_: [
+  '../datasets/coco_detection_MFAD.yml',
+  '../runtime_mfad.yml',
+  '_base_/optimizer_mfad.yml',
+  '_base_/HrDETR_r50vd_mfad.yml',
+  '_base_/HrDETR_reader_mfad.yml',
+]
+
+find_unused_parameters: True
+log_iter: 200

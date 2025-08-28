@@ -1,0 +1,6 @@
+Car
+Bus
+Truck
+Pedestrian
+EbikeRider
+Cyclist
